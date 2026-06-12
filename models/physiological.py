@@ -22,32 +22,32 @@ from datetime import datetime
 # LAI sensitivity coefficients (dB per LAI unit)
 LAI_PARAMS = {
     "Winter Wheat": {
-        "vh_sensitivity": 0.80,
-        "baseline_vh": 8.0,
+        "vh_sensitivity": 0.50,
+        "baseline_vh": 6.5,
         "max_lai": 7.0,
         "peak_stage": "Heading"
     },
     "Spring Barley": {
-        "vh_sensitivity": 0.75,
-        "baseline_vh": 7.5,
+        "vh_sensitivity": 0.45,
+        "baseline_vh": 6.0,
         "max_lai": 6.0,
         "peak_stage": "Heading"
     },
     "Potato": {
-        "vh_sensitivity": 0.60,
-        "baseline_vh": 6.0,
+        "vh_sensitivity": 0.40,
+        "baseline_vh": 5.5,
         "max_lai": 5.0,
         "peak_stage": "Canopy Closure"
     },
     "Oilseed Rape": {
-        "vh_sensitivity": 0.70,
-        "baseline_vh": 7.0,
+        "vh_sensitivity": 0.45,
+        "baseline_vh": 6.0,
         "max_lai": 5.5,
         "peak_stage": "Flowering"
     },
     "Grassland": {
-        "vh_sensitivity": 0.50,
-        "baseline_vh": 5.0,
+        "vh_sensitivity": 0.35,
+        "baseline_vh": 4.5,
         "max_lai": 4.0,
         "peak_stage": "Peak Growth"
     }

@@ -40,7 +40,7 @@ def get_ndvi_current(lat, lng, token, days_back=15):
 function setup() {
   return {
     input: [{bands:["B04","B08","B05"],units:"REFLECTANCE"}],
-    output: {bands:3}
+    output: {bands:3, sampleType:"FLOAT32"}
   };
 }
 function evaluatePixel(s) {
@@ -92,9 +92,9 @@ function evaluatePixel(s) {
                     ndre_vals = arr.flatten()
                     evi_vals  = arr.flatten()
 
-                ndvi_valid = ndvi_vals[(ndvi_vals > 0.05) & (ndvi_vals < 1.0)]
-                ndre_valid = ndre_vals[(ndre_vals > 0.05) & (ndre_vals < 1.0)]
-                evi_valid  = evi_vals[(evi_vals > 0.0) & (evi_vals < 2.0)]
+                ndvi_valid = ndvi_vals[(ndvi_vals > -0.1) & (ndvi_vals < 1.0)]
+                ndre_valid = ndre_vals[(ndre_vals > -0.1) & (ndre_vals < 1.0)]
+                evi_valid  = evi_vals[(evi_vals > -0.5) & (evi_vals < 2.0)]
 
                 return {
                     "ndvi": round(float(np.mean(ndvi_valid)), 4)
