@@ -296,7 +296,7 @@ def full_field_analysis(observations):
     return {
         "field_analysis": {
             "crop_type": crop_type,
-            "classification_confidence": classification["confidence_pct"],
+            "classification_confidence": classification.get("confidence_pct", classification.get("confidence", 0)),
             "classification_reasons": classification["reasons"],
             "planting_date": (
                 growth_result.get("sowing_date_detected") or
