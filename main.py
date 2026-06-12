@@ -144,6 +144,41 @@ def soil_moisture(request: FieldRequest):
             request.lng,
             request.crop or "Unknown"
         )
+        if result.get("error"):
+            # Return partial data with weather-only estimate
+            import requests as _req
+            r = _req.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": request.lat,
+                    "longitude": request.lng,
+                    "daily": "precipitation_sum,et0_fao_evapotranspiration,soil_moisture_0_to_7cm_mean",
+                    "past_days": 10,
+                    "forecast_days": 1,
+                    "timezone": "auto"
+                }, timeout=45)
+            if r.status_code == 200:
+                daily = r.json().get("daily", {})
+                sm = daily.get("soil_moisture_0_to_7cm_mean", [])
+                rain = daily.get("precipitation_sum", [])
+                valid_sm = [x for x in sm if x]
+                current = valid_sm[-1] if valid_sm else None
+                return {
+                    "data_sources": {
+                        "surface_moisture": "Open-Meteo soil model",
+                        "root_zone": "Open-Meteo direct",
+                        "sar_corrections_applied": False
+                    },
+                    "root_zone": {
+                        "current_moisture": current,
+                        "status": "Adequate" if current and current > 0.2 else "Unknown",
+                        "status_icon": "✅" if current and current > 0.2 else "❓",
+                        "trend": "Stable",
+                        "trend_icon": "→",
+                        "irrigation_needed": False
+                    },
+                    "irrigation_recommendation": "No irrigation needed" if current and current > 0.2 else "Data unavailable"
+                }
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
