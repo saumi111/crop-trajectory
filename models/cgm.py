@@ -248,17 +248,46 @@ def run_cgm(lat, lng, client_id=None, client_secret=None):
         refined_lai = round(0.4 * sar_lai + 0.6 * ndvi_lai, 2)
 
     # Step 8 — Compile complete CGM output
+    conf_pct = classification.get("confidence_pct", 0)
+    conf_label = "High" if conf_pct >= 70 else                  "Moderate" if conf_pct >= 50 else "Low"
+
+    all_scores = classification.get("scores", {})
+    total = sum(all_scores.values()) if all_scores else 1
+    alternatives = sorted(
+        [{"crop": k, "pct": round(v/total*100)}
+         for k, v in all_scores.items()
+         if k != crop_type and v > 0],
+        key=lambda x: x["pct"], reverse=True
+    )[:3]
+
     result = {
         "location": {"lat": lat, "lng": lng},
         "analysis_date": today.strftime("%Y-%m-%d"),
         "crop_intelligence": {
             "crop_type": crop_type,
-            "classification_confidence": classification["confidence_pct"],
-            "planting_date": growth.get("planting_date"),
-            "current_stage": growth.get("current_stage"),
-            "yield_estimate_tha": growth.get("yield_estimate_tha"),
-            "yield_range": growth.get("yield_range"),
-            "management_alerts": growth.get("management_alerts", [])
+            "classification_confidence": conf_pct,
+            "classification_confidence_label": conf_label,
+            "alternative_matches": alternatives,
+            "planting_date": (
+                growth.get("sowing_date_detected") or
+                growth.get("planting_date_detected")
+                if growth else None
+            ),
+            "current_stage": (
+                growth.get("current_stage") or
+                growth.get("current_bbch")
+                if growth else None
+            ),
+            "yield_estimate_tha": growth.get("yield_estimate_tha") if growth else None,
+            "yield_range": growth.get("yield_range") if growth else None,
+            "management_alerts": (
+                growth.get("management_alerts", [])
+                if growth else []
+            ),
+            "growth_model_confidence": (
+                growth.get("confidence")
+                if growth else "LOW"
+            )
         },
         "sar_data": {
             "observations": len(available_obs),
@@ -310,11 +339,12 @@ if __name__ == "__main__":
     print("\n=== CROP GROWTH MODEL OUTPUT ===")
     ci = result["crop_intelligence"]
     print(f"\nCrop Intelligence:")
-    print(f"  Crop type:        {ci['crop_type']} ({ci['classification_confidence']}%)")
+    print(f"  Crop type:        {ci['crop_type']}")
+    print(f"  Confidence:       {ci['classification_confidence']}% ({ci['classification_confidence_label']})")
+    print(f"  Alternatives:     {ci['alternative_matches']}")
     print(f"  Planting date:    {ci['planting_date']}")
     print(f"  Current stage:    {ci['current_stage']}")
     print(f"  Yield estimate:   {ci['yield_estimate_tha']} t/ha")
-    print(f"  Yield range:      {ci['yield_range']}")
 
     opt = result["optical_data"]
     print(f"\nOptical Data:")
@@ -324,21 +354,12 @@ if __name__ == "__main__":
 
     phy = result["physiological"]
     print(f"\nPhysiological:")
-    print(f"  LAI (SAR):        {phy['lai_sar']}")
     print(f"  LAI (refined):    {phy['lai_refined']}")
     print(f"  Biomass:          {phy['biomass_t_ha']} t/ha DM")
     print(f"  Canopy cover:     {phy['canopy_cover_pct']}%")
-    print(f"  LAI trend:        {phy['lai_trend']}")
 
     wx = result["weather"]
     print(f"\nWeather:")
-    print(f"  GDD base 0°C:     {wx['gdd_accumulated_base0']}°C-days")
-    print(f"  GDD base 8°C:     {wx['gdd_accumulated_base8']}°C-days")
-    print(f"  Total rainfall:   {wx['total_rainfall_mm']} mm")
-    print(f"  Water balance:    {wx['water_balance_mm']} mm")
-    print(f"  Avg temperature:  {wx['avg_temp_c']}°C")
-
-    if ci['management_alerts']:
-        print(f"\nManagement Alerts:")
-        for alert in ci['management_alerts']:
-            print(f"  → {alert}")
+    print(f"  GDD base 0:       {wx['gdd_accumulated_base0']} C-days")
+    print(f"  Rainfall:         {wx['total_rainfall_mm']} mm")
+    print(f"  Avg temp:         {wx['avg_temp_c']} C")
