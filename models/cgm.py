@@ -323,6 +323,34 @@ def run_cgm(lat, lng, client_id=None, client_secret=None):
         }
     }
 
+    # Step 9 — Thermal stress from ECOSTRESS/MODIS
+    print("  Fetching thermal stress data...")
+    from extractors.ecostress import get_thermal_stress_profile
+    # Use current air temp not seasonal average
+    current_air_temp = None
+    try:
+        import requests as _req
+        _r = _req.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat, "longitude": lng,
+                "current": "temperature_2m",
+                "timezone": "Europe/Dublin"
+            }, timeout=15)
+        if _r.status_code == 200:
+            current_air_temp = _r.json().get(
+                "current", {}).get("temperature_2m")
+    except:
+        current_air_temp = weather.get("avg_temp_c") if weather else None
+
+    thermal = get_thermal_stress_profile(
+        lat, lng,
+        crop_type=crop_type,
+        air_temp=current_air_temp,
+        ndvi=ndvi
+    )
+    result["thermal_stress"] = thermal
+
     return result
 
 

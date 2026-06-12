@@ -326,6 +326,7 @@ def generate_farmer_report(cgm_result, field_intel):
     )
 
     return {
+        "thermal_stress": cgm_result.get("thermal_stress", {}),
         "farmer_summary": {
             "crop": f"{crop_type} ({conf_label} confidence)",
             "alternative_matches": [
@@ -432,8 +433,24 @@ def print_farmer_report(report):
                           f"{icon} {h['status']}{sar}")
         else:
             print("  Moisture data unavailable")
+
+    print(f"\n--- Thermal Stress ---")
+    thermal = report.get("thermal_stress", {})
+    if thermal and thermal.get("available"):
+        print(f"Data source:      {thermal.get('data_source','Unknown')}")
+        print(f"Coverage:         {thermal.get('note','')}")
+        lst = thermal.get("lst", {})
+        print(f"Land Surface Temp:{lst.get('celsius','N/A')}°C")
+        print(f"Air Temperature:  {thermal.get('air_temperature_c','N/A')}°C")
+        cwsi = thermal.get("crop_water_stress", {})
+        if cwsi:
+            print(f"CWSI:             {cwsi.get('cwsi','N/A')}")
+            print(f"Stress Level:     {cwsi.get('stress_icon','')} {cwsi.get('stress_level','')}")
+            print(f"Canopy-Air dT:    {cwsi.get('temp_difference_c','N/A')}°C")
+        print(f"Actual ET:        {thermal.get('actual_et_mm_day','N/A')} mm/day")
+        print(f"Signal:           {thermal.get('irrigation_signal','N/A')}")
     else:
-        print("  Moisture data unavailable")
+        print("  Thermal stress data unavailable")
 
     print(f"THIS WEEK'S ACTIONS  |  Priority: {wa['priority']}")
     print("="*52)

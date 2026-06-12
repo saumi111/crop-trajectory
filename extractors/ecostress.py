@@ -51,46 +51,54 @@ def get_modis_lst(lat, lng, date_str=None):
     """
     try:
         today = datetime.now()
-        target = datetime.strptime(date_str, "%Y-%m-%d") \
-            if date_str else today
+        target = datetime.strptime(date_str, "%Y-%m-%d") if date_str else today
 
-        r = requests.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": lat,
-                "longitude": lng,
-                "hourly": "soil_temperature_0cm",
-                "past_days": 3,
-                "forecast_days": 1,
-                "timezone": "Europe/Dublin"
-            }, timeout=15)
+        # Retry up to 3 times
+        r = None
+        for attempt in range(3):
+            try:
+                r = requests.get(
+                    "https://api.open-meteo.com/v1/forecast",
+                    params={
+                        "latitude": lat,
+                        "longitude": lng,
+                        "current": "temperature_2m,soil_temperature_0cm",
+                        "daily": "temperature_2m_max,temperature_2m_min",
+                        "past_days": 1,
+                        "forecast_days": 1,
+                        "timezone": "Europe/Dublin"
+                    }, timeout=30)
+                break
+            except requests.exceptions.Timeout:
+                if attempt == 2:
+                    raise
+                import time
+                time.sleep(2)
 
         if r.status_code == 200:
             data = r.json()
-            temps = data.get("hourly", {}).get(
-                "soil_temperature_0cm", [])
-            times = data.get("hourly", {}).get("time", [])
+            current = data.get("current", {})
+            daily = data.get("daily", {})
 
-            # Get daytime values (10am-2pm)
-            daytime = [t for t, v in zip(temps, times)
-                      if v and "T1" in v and v is not None]
+            soil_temp = current.get("soil_temperature_0cm")
+            air_temp = current.get("temperature_2m")
+            temps_max = daily.get("temperature_2m_max", [])
+            temps_min = daily.get("temperature_2m_min", [])
 
-            if temps:
-                valid = [t for t in temps if t is not None]
-                lst_mean = round(np.mean(valid), 2) if valid else None
-                lst_max = round(max(valid), 2) if valid else None
+            lst_c = soil_temp if soil_temp else air_temp
+            lst_max = temps_max[0] if temps_max else lst_c
 
+            if lst_c is not None:
                 return {
-                    "lst_kelvin": round(lst_mean + 273.15, 2)
-                                  if lst_mean else None,
-                    "lst_celsius": lst_mean,
-                    "lst_max_celsius": lst_max,
+                    "lst_kelvin": round(lst_c + 273.15, 2),
+                    "lst_celsius": round(lst_c, 2),
+                    "lst_max_celsius": round(lst_max, 2) if lst_max else None,
                     "source": "Open-Meteo surface temperature (MODIS proxy)",
                     "resolution_m": 1000,
                     "date": today.strftime("%Y-%m-%d")
                 }
     except Exception as e:
-        pass
+        print(f"LST error: {e}")
     return None
 
 
