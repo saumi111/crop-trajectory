@@ -384,7 +384,28 @@ def parcel_intelligence(request: ParcelRequest):
                 detail="No SAR data for this parcel")
 
         # Step 3 — Crop analysis
+        # Use DAFM crop type as ground truth if available
+        from models.crop_classifier import full_field_analysis
         analysis = full_field_analysis(available)
+        
+        # Override classifier with DAFM known crop
+        dafm_crop_map = {
+            "Permanent Pasture": "Grassland",
+            "Temporary Grassland": "Grassland",
+            "Winter Wheat": "Winter Wheat",
+            "Spring Barley": "Spring Barley",
+            "Winter Barley": "Winter Wheat",
+            "Oats": "Spring Barley",
+            "Winter Oilseed Rape": "Oilseed Rape",
+            "Potatoes": "Potato",
+            "Woodland": "Grassland"
+        }
+        if crop in dafm_crop_map:
+            analysis["field_analysis"]["crop_type"] = dafm_crop_map[crop]
+            analysis["field_analysis"]["crop_source"] = "DAFM parcel data"
+            analysis["field_analysis"]["classification_confidence"] = 100
+        else:
+            analysis["field_analysis"]["crop_source"] = "SAR classifier"
 
         # Step 4 — Field variability
         variability = [o.get("field_variability", 0)
