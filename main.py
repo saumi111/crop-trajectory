@@ -427,15 +427,31 @@ def parcel_intelligence(request: ParcelRequest):
                 recent = rvi_vals[-3:] if len(rvi_vals) >= 3 else rvi_vals
                 trend = "Growing" if len(recent) > 1 and recent[-1] > recent[0] else "Stable"
                 avg_rvi = round(sum(rvi_vals)/len(rvi_vals), 4) if rvi_vals else None
-                
+                latest_rvi = rvi_vals[-1] if rvi_vals else None
+                field_var = avg_var if avg_var else 0
+
                 analysis["field_analysis"]["current_stage"] = f"Permanent Pasture — {trend}"
                 analysis["field_analysis"]["yield_estimate_tha"] = None
                 analysis["field_analysis"]["yield_range"] = None
-                field_var = avg_var if avg_var else 0
                 analysis["field_analysis"]["management_alerts"] = [
                     f"Grass RVI: {avg_rvi} — {'Good grazing cover' if avg_rvi and avg_rvi > 0.55 else 'Monitor grass growth'}",
                     "Variability indicates mixed sward condition" if field_var > 0.4 else "Uniform sward"
                 ]
+                # Replace arable growth model with clean grassland model
+                analysis["growth_model"] = {
+                    "system": "grassland",
+                    "crop": "Permanent Pasture",
+                    "trend": trend,
+                    "rvi_current": latest_rvi,
+                    "rvi_seasonal_mean": avg_rvi,
+                    "grazing_cover": (
+                        "Good" if avg_rvi and avg_rvi > 0.55 else
+                        "Moderate" if avg_rvi and avg_rvi > 0.45 else
+                        "Poor"
+                    ),
+                    "field_variability": field_var,
+                    "latest_observation": available[-1]["date"] if available else None
+                }
         else:
             analysis["field_analysis"]["crop_source"] = "SAR classifier"
 
