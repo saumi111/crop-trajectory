@@ -401,9 +401,26 @@ def parcel_intelligence(request: ParcelRequest):
             "Woodland": "Grassland"
         }
         if crop in dafm_crop_map:
-            analysis["field_analysis"]["crop_type"] = dafm_crop_map[crop]
+            mapped_crop = dafm_crop_map[crop]
+            analysis["field_analysis"]["crop_type"] = mapped_crop
             analysis["field_analysis"]["crop_source"] = "DAFM parcel data"
             analysis["field_analysis"]["classification_confidence"] = 100
+
+            # Override growth model for grassland
+            if mapped_crop == "Grassland":
+                # Calculate grass RVI trend
+                rvi_vals = [o["rvi"] for o in available if o.get("rvi")]
+                recent = rvi_vals[-3:] if len(rvi_vals) >= 3 else rvi_vals
+                trend = "Growing" if len(recent) > 1 and recent[-1] > recent[0] else "Stable"
+                avg_rvi = round(sum(rvi_vals)/len(rvi_vals), 4) if rvi_vals else None
+                
+                analysis["field_analysis"]["current_stage"] = f"Permanent Pasture — {trend}"
+                analysis["field_analysis"]["yield_estimate_tha"] = None
+                analysis["field_analysis"]["yield_range"] = None
+                analysis["field_analysis"]["management_alerts"] = [
+                    f"Grass RVI: {avg_rvi} — {'Good grazing cover' if avg_rvi and avg_rvi > 0.55 else 'Monitor grass growth'}",
+                    "Variability indicates mixed sward condition" if (avg_var or 0) > 0.4 else "Uniform sward"
+                ]
         else:
             analysis["field_analysis"]["crop_source"] = "SAR classifier"
 
