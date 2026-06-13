@@ -296,7 +296,10 @@ def field_analysis_polygon(request: PolygonRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        raise HTTPException(
+            status_code=500, 
+            detail=f"{str(e)} | {traceback.format_exc()[-500:]}")
 
 
 if __name__ == "__main__":
