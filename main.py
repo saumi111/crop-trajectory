@@ -386,8 +386,13 @@ def parcel_intelligence(request: ParcelRequest):
                 status_code=404,
                 detail="No SAR data for this parcel")
 
-        # Step 3 — Crop analysis
-        # Use DAFM crop type as ground truth if available
+        # Step 3 — Field variability (needed before crop analysis)
+        variability = [o.get("field_variability", 0)
+                      for o in available]
+        avg_var = round(
+            sum(variability)/len(variability), 4)             if variability else 0
+
+        # Crop analysis
         from models.crop_classifier import full_field_analysis
         analysis = full_field_analysis(available)
         
@@ -428,12 +433,7 @@ def parcel_intelligence(request: ParcelRequest):
         else:
             analysis["field_analysis"]["crop_source"] = "SAR classifier"
 
-        # Step 4 — Field variability
-        variability = [o.get("field_variability", 0)
-                      for o in available]
-        avg_var = round(
-            sum(variability)/len(variability), 4) \
-            if variability else None
+        # Step 4 — Field variability already calculated above
 
         return {
             "parcel": {
