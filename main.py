@@ -393,19 +393,7 @@ def parcel_intelligence(request: ParcelRequest):
             sum(variability)/len(variability), 4)             if variability else 0
 
         # Crop analysis
-        # Use Ireland-specific classifier when DAFM parcel data available
-        from models.crop_classifier_ireland import classify_ireland
-        from models.crop_classifier import full_field_analysis
-        ireland_result = classify_ireland(available)
-        analysis = full_field_analysis(available)
-        # Override with Ireland classifier if no DAFM crop match
-        if crop not in dafm_crop_map:
-            analysis["field_analysis"]["crop_type"] = ireland_result["crop_type"]
-            analysis["field_analysis"]["classification_confidence"] = ireland_result["confidence_pct"]
-            analysis["field_analysis"]["classification_reasons"] = ireland_result.get("classification_reasons", [])
-            analysis["field_analysis"]["crop_source"] = ireland_result.get("signature_source", "Irish SAR classifier")
-        
-        # Override classifier with DAFM known crop
+        # DAFM crop type mapping
         dafm_crop_map = {
             "Permanent Pasture": "Grassland",
             "Temporary Grassland": "Grassland",
@@ -417,6 +405,20 @@ def parcel_intelligence(request: ParcelRequest):
             "Potatoes": "Potato",
             "Woodland": "Grassland"
         }
+
+        # Use Ireland data-driven classifier for unknown crops
+        from models.crop_classifier_ireland import classify_ireland
+        from models.crop_classifier import full_field_analysis
+        ireland_result = classify_ireland(available)
+        analysis = full_field_analysis(available)
+
+        # Override with Ireland classifier if no DAFM crop match
+        if crop not in dafm_crop_map:
+            analysis["field_analysis"]["crop_type"] = ireland_result["crop_type"]
+            analysis["field_analysis"]["classification_confidence"] = ireland_result["confidence_pct"]
+            analysis["field_analysis"]["classification_reasons"] = ireland_result.get("classification_reasons", [])
+            analysis["field_analysis"]["crop_source"] = ireland_result.get("signature_source", "Irish SAR classifier")
+
         if crop in dafm_crop_map:
             mapped_crop = dafm_crop_map[crop]
             analysis["field_analysis"]["crop_type"] = mapped_crop
