@@ -369,69 +369,17 @@ async def ecostress_et(lat: float, lng: float, days: int = 90):
 
         task_id = r.json().get("task_id")
 
-        # Poll status (max 5 min)
-        import time
-        for _ in range(30):
-            status_r = req.get(f"{APPEEARS}/task/{task_id}",
-                               headers=headers, timeout=15)
-            status = status_r.json().get("status")
-            if status == "done":
-                break
-            elif status == "error":
-                return {"error": "AppEEARS task failed", "task_id": task_id}
-            time.sleep(10)
-
-        if status != "done":
-            return {"status": "processing", "task_id": task_id,
-                    "message": "Task still running — poll /ecostress_task?id=" + task_id}
-
-        # Get results
-        bundle = req.get(f"{APPEEARS}/bundle/{task_id}",
-                         headers=headers, timeout=15).json()
-        files = bundle.get("files", [])
-        csv_file = next((f for f in files if f["file_name"].endswith(".csv")), None)
-
-        if not csv_file:
-            return {"task_id": task_id, "status": "done", "files": len(files),
-                    "message": "No CSV found — check GeoTIFF files"}
-
-        # Download and parse CSV
-        csv_r = req.get(
-            f"{APPEEARS}/bundle/{task_id}/{csv_file['file_id']}",
-            headers=headers, timeout=60, stream=True
-        )
-        lines = csv_r.text.strip().split("\n")
-        if len(lines) < 2:
-            return {"task_id": task_id, "error": "Empty CSV"}
-
-        headers_row = lines[0].split(",")
-        observations = []
-        for line in lines[1:]:
-            vals = line.split(",")
-            if len(vals) == len(headers_row):
-                row = dict(zip(headers_row, vals))
-                try:
-                    def safe_float(v):
-                        try: return float(v)
-                        except: return None
-                    observations.append({
-                        "date": row.get("Date", ""),
-                        "et_daily_wm2": safe_float(row.get("ETdaily")),
-                        "et_inst_wm2":  safe_float(row.get("PTJPLSMinst")),
-                        "et_uncertainty_wm2": safe_float(row.get("ETinstUncertainty")),
-                        "cloud": safe_float(row.get("cloud"))
-                    })
-                except ValueError:
-                    continue
-
+        # Return immediately — AppEEARS takes 5-15 min
+        # Render times out at 30s so don't poll here
         return {
+            "status": "submitted",
+            "task_id": task_id,
             "lat": lat,
             "lng": lng,
-            "task_id": task_id,
             "period_days": days,
-            "observations": len(observations),
-            "et_timeseries": observations,
-            "source": "ECOSTRESS ECO3ETPTJPL.001 via NASA AppEEARS"
+            "message": "Task submitted. Poll for results every 2 min.",
+            "poll_url": f"/ecostress_task?id={task_id}",
+            "results_url": f"/ecostress_results?id={task_id}"
         }
 
     except Exception as e:
