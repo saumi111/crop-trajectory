@@ -302,6 +302,140 @@ def field_analysis_polygon(request: PolygonRequest):
             detail=f"{str(e)} | {traceback.format_exc()[-500:]}")
 
 
+
+
+@app.get("/ecostress_et")
+async def ecostress_et(lat: float, lng: float, days: int = 90):
+    """
+    Query ECOSTRESS L3 ET via NASA AppEEARS
+    Returns evapotranspiration time series for a location
+    """
+    import requests as req
+    from datetime import datetime, timedelta
+
+    token = os.environ.get("NASA_EARTHDATA_TOKEN", "")
+    if not token:
+        return {"error": "NASA_EARTHDATA_TOKEN not set"}
+
+    APPEEARS = "https://appeears.earthdatacloud.nasa.gov/api"
+
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+
+    # Submit point sample request
+    task = {
+        "task_type": "point",
+        "task_name": f"et_{lat}_{lng}_{end_date.strftime('%Y%m%d')}",
+        "params": {
+            "dates": [{
+                "startDate": start_date.strftime("%m-%d-%Y"),
+                "endDate": end_date.strftime("%m-%d-%Y")
+            }],
+            "layers": [
+                {"ProductAndVersion": "ECO3ETPTJPL.001", "Layer": "ETinst"},
+                {"ProductAndVersion": "ECO3ETPTJPL.001", "Layer": "ETdaily"},
+                {"ProductAndVersion": "ECO3ETPTJPL.001", "Layer": "ETinstUncertainty"}
+            ],
+            "coordinates": [{
+                "id": "parcel",
+                "latitude": lat,
+                "longitude": lng,
+                "category": "field"
+            }]
+        }
+    }
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        # Submit task
+        r = req.post(f"{APPEEARS}/task", json=task,
+                     headers=headers, timeout=30)
+        if r.status_code not in [200, 202]:
+            return {"error": f"Task submission failed: {r.status_code}",
+                    "detail": r.text[:200]}
+
+        task_id = r.json().get("task_id")
+
+        # Poll status (max 5 min)
+        import time
+        for _ in range(30):
+            status_r = req.get(f"{APPEEARS}/task/{task_id}",
+                               headers=headers, timeout=15)
+            status = status_r.json().get("status")
+            if status == "done":
+                break
+            elif status == "error":
+                return {"error": "AppEEARS task failed", "task_id": task_id}
+            time.sleep(10)
+
+        if status != "done":
+            return {"status": "processing", "task_id": task_id,
+                    "message": "Task still running — poll /ecostress_task?id=" + task_id}
+
+        # Get results
+        bundle = req.get(f"{APPEEARS}/bundle/{task_id}",
+                         headers=headers, timeout=15).json()
+        files = bundle.get("files", [])
+        csv_file = next((f for f in files if f["file_name"].endswith(".csv")), None)
+
+        if not csv_file:
+            return {"task_id": task_id, "status": "done", "files": len(files),
+                    "message": "No CSV found — check GeoTIFF files"}
+
+        # Download and parse CSV
+        csv_r = req.get(
+            f"{APPEEARS}/bundle/{task_id}/{csv_file['file_id']}",
+            headers=headers, timeout=60, stream=True
+        )
+        lines = csv_r.text.strip().split("\n")
+        if len(lines) < 2:
+            return {"task_id": task_id, "error": "Empty CSV"}
+
+        headers_row = lines[0].split(",")
+        observations = []
+        for line in lines[1:]:
+            vals = line.split(",")
+            if len(vals) == len(headers_row):
+                row = dict(zip(headers_row, vals))
+                try:
+                    observations.append({
+                        "date": row.get("Date", ""),
+                        "et_daily_mm": float(row.get("ETdaily", "nan")),
+                        "et_inst_wm2": float(row.get("ETinst", "nan")),
+                        "et_uncertainty": float(row.get("ETinstUncertainty", "nan"))
+                    })
+                except ValueError:
+                    continue
+
+        return {
+            "lat": lat,
+            "lng": lng,
+            "task_id": task_id,
+            "period_days": days,
+            "observations": len(observations),
+            "et_timeseries": observations,
+            "source": "ECOSTRESS ECO3ETPTJPL.001 via NASA AppEEARS"
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/ecostress_task")
+async def ecostress_task_status(id: str):
+    """Check status of a pending AppEEARS task"""
+    import requests as req
+    token = os.environ.get("NASA_EARTHDATA_TOKEN", "")
+    if not token:
+        return {"error": "NASA_EARTHDATA_TOKEN not set"}
+    r = req.get(
+        f"https://appeears.earthdatacloud.nasa.gov/api/task/{id}",
+        headers={"Authorization": f"Bearer {token}"}, timeout=15
+    )
+    return r.json()
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001, reload=False)
