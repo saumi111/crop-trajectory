@@ -86,8 +86,17 @@ def classify_ml(observations):
 
     uncertain = (best_prob - second_prob) < 15
 
-    # Cap confidence — 28 parcels is small training set
-    operational_confidence = min(75, best_prob)
+    # Cap confidence based on real CV accuracy per class
+    # Grassland: 94%, Spring Barley: 68%, Wheat/Oats/OSR: ~50%
+    cv_accuracy_caps = {
+        "Grassland": 90,
+        "Spring Barley": 65,
+        "Winter Wheat": 50,
+        "Oats": 50,
+        "Oilseed Rape": 45,
+    }
+    cap = cv_accuracy_caps.get(best_crop, 55)
+    operational_confidence = min(cap, best_prob)
 
     return {
         "crop_type": best_crop if not uncertain else "Uncertain",
