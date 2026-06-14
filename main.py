@@ -313,11 +313,22 @@ async def ecostress_et(lat: float, lng: float, days: int = 90):
     import requests as req
     from datetime import datetime, timedelta
 
-    token = os.environ.get("NASA_EARTHDATA_TOKEN", "")
-    if not token:
-        return {"error": "NASA_EARTHDATA_TOKEN not set"}
-
+    username = os.environ.get("NASA_EARTHDATA_USER", "")
+    password = os.environ.get("NASA_EARTHDATA_PASS", "")
     APPEEARS = "https://appeears.earthdatacloud.nasa.gov/api"
+
+    if not username or not password:
+        return {"error": "NASA_EARTHDATA_USER and NASA_EARTHDATA_PASS not set"}
+
+    # Get fresh AppEEARS session token
+    login_r = req.post(f"{APPEEARS}/login",
+                       auth=(username, password), timeout=30)
+    if login_r.status_code != 200:
+        return {"error": f"AppEEARS login failed: {login_r.status_code}",
+                "detail": login_r.text[:200]}
+    token = login_r.json().get("token")
+    if not token:
+        return {"error": "No token returned from AppEEARS login"}
 
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
