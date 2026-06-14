@@ -18,7 +18,7 @@ sys.path.insert(0, '/workspaces/crop-trajectory')
 os.environ['CDSE_CLIENT_ID'] = 'sh-6e5978f5-f5d6-43d6-874d-720d84121683'
 os.environ['CDSE_CLIENT_SECRET'] = 'yrMEXQ5drlF26yrB4sTEXfWOIwKtB1fP'
 
-from extractors.sar_polygon import get_sar_timeseries_polygon
+from extractors.fusion_extractor import extract_fusion_features
 
 LABEL_MAP = {
     "Permanent Pasture": "Grassland",
@@ -234,28 +234,20 @@ if __name__ == "__main__":
 
             try:
                 # SAR extraction
-                sar_obs = get_sar_timeseries_polygon(
-                    parcel["polygon"],
-                    "2025-10-01", "2026-06-12",
-                    os.environ["CDSE_CLIENT_ID"],
-                    os.environ["CDSE_CLIENT_SECRET"],
-                    interval_days=12
-                )
-                available = [o for o in sar_obs if o.get("available")]
-
-                if len(available) < 6:
-                    print("insufficient SAR")
-                    continue
-
-                # NDVI/NDRE extraction
-                ndvi_data = get_ndvi_monthly(
+                result = extract_fusion_features(
                     parcel["polygon"],
                     os.environ["CDSE_CLIENT_ID"],
                     os.environ["CDSE_CLIENT_SECRET"]
                 )
 
-                # Extract features
-                features = extract_features(available, ndvi_data)
+                if result["n_sar"] < 6:
+                    print(f"insufficient SAR ({result['n_sar']})")
+                    continue
+                if result["n_ndvi"] < 3:
+                    print(f"insufficient NDVI ({result['n_ndvi']})")
+                    continue
+
+                features = result["features"]
 
                 dataset.append({
                     "par_lab": parcel["par_lab"],
@@ -263,11 +255,11 @@ if __name__ == "__main__":
                     "dafm_crop": dafm_crop,
                     "area_ha": parcel["area_ha"],
                     "features": features,
-                    "n_sar": len(available),
-                    "n_ndvi": len(ndvi_data.get("ndvi", {}))
+                    "n_sar": result["n_sar"],
+                    "n_ndvi": result["n_ndvi"]
                 })
                 processed.add(parcel["par_lab"])
-                print(f"✅ SAR:{len(available)} NDVI:{len(ndvi_data.get('ndvi',{}))}")
+                print(f"✅ SAR:{result['n_sar']} NDVI:{result['n_ndvi']}")
 
                 # Save progress every 10 parcels
                 if len(dataset) % 10 == 0:
