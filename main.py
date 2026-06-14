@@ -343,9 +343,9 @@ async def ecostress_et(lat: float, lng: float, days: int = 90):
                 "endDate": end_date.strftime("%m-%d-%Y")
             }],
             "layers": [
-                {"ProductAndVersion": "ECO3ETPTJPL.001", "Layer": "ETinst"},
-                {"ProductAndVersion": "ECO3ETPTJPL.001", "Layer": "ETdaily"},
-                {"ProductAndVersion": "ECO3ETPTJPL.001", "Layer": "ETinstUncertainty"}
+                {"product": "ECO3ETPTJPL.001", "layer": "ETinst"},
+                {"product": "ECO3ETPTJPL.001", "layer": "ETdaily"},
+                {"product": "ECO3ETPTJPL.001", "layer": "ETinstUncertainty"}
             ],
             "coordinates": [{
                 "id": "parcel",
