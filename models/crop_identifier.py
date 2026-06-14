@@ -92,83 +92,214 @@ def analyse_time_series(observations):
         "Oats": 0
     }
 
-    # === KEY DISCRIMINATORS ===
+    # === KEY DISCRIMINATORS from 479 Irish DAFM parcels ===
+    # Reference signatures:
+    # Permanent Pasture: amp +0.15, VV range  71, winter 28.6
+    # Spring Barley:     amp +5.57, VV range 227, winter 28.6
+    # Oilseed Rape:      amp -2.84, VV range 214, winter 32.6
+    # Winter Wheat:      amp -9.74, VV range 190, winter 29.8
+    # Oats:              amp +11.5, VV range 144, winter 41.3
+    # Spring Wheat:      amp -15.5, VV range 131, winter 29.8
 
-    # 1. VV range — strongest grassland signal
+    # === DERIVED FEATURES — monthly resolution ===
+    vh_by_month = {}
+    vv_by_month = {}
+    if monthly:
+        vh_by_month = {m: v["vh"] for m, v in monthly.items() if v.get("vh")}
+        vv_by_month = {m: v["vv"] for m, v in monthly.items() if v.get("vv")}
+
+    # Seasonal averages
+    def avg(months):
+        vals = [vh_by_month[m] for m in months if m in vh_by_month]
+        return round(sum(vals)/len(vals), 2) if vals else None
+
+    winter_vh = avg([12, 1, 2])
+    spring_vh = avg([3, 4, 5])
+    summer_vh = avg([6, 7, 8])
+    autumn_vh = avg([9, 10, 11])
+
+    # All VV for range
+    all_vv_vals = [vv_by_month[m] for m in vv_by_month]
+
+    # Amplitude features
+    vh_amplitude = round(summer_vh - winter_vh, 2) if summer_vh and winter_vh else None
+    spring_minus_winter = round(spring_vh - winter_vh, 2) if spring_vh and winter_vh else None
+    summer_minus_spring = round(summer_vh - spring_vh, 2) if summer_vh and spring_vh else None
+
+    # Peak and trough months
+    peak_month = max(vh_by_month, key=vh_by_month.get) if vh_by_month else None
+    trough_month = min(vh_by_month, key=vh_by_month.get) if vh_by_month else None
+    seasonal_amplitude = round(
+        vh_by_month[peak_month] - vh_by_month[trough_month], 2
+    ) if peak_month and trough_month else None
+
+    # Monthly growth rates — key cereal discriminator
+    # Apr-May growth (spring cereals germinating)
+    apr_may_rate = None
+    if 4 in vh_by_month and 5 in vh_by_month:
+        apr_may_rate = round(vh_by_month[5] - vh_by_month[4], 2)
+
+    # May-Jun rate (heading period)
+    may_jun_rate = None
+    if 5 in vh_by_month and 6 in vh_by_month:
+        may_jun_rate = round(vh_by_month[6] - vh_by_month[5], 2)
+
+    # Jun-Jul decline (harvest senescence)
+    jun_jul_rate = None
+    if 6 in vh_by_month and 7 in vh_by_month:
+        jun_jul_rate = round(vh_by_month[7] - vh_by_month[6], 2)
+
+    # Reference monthly signatures from 479 Irish parcels:
+    # Grassland:     peak stable all year, amplitude < 10
+    # Spring Barley: trough Jan-Mar, peak Jun-Jul, amplitude +5.57
+    # Winter Wheat:  peak Apr-May, drops Jun-Jul, amplitude -9.74
+    # Oilseed Rape:  dip Mar-Apr (flowering), peak Nov-Jan, amplitude -2.84
+    # Oats:          trough Jan-Mar, peak Jul-Aug, highest amplitude +11.55
+    # Spring Wheat:  sharp Jul-Aug decline, amplitude -15.51
+
+    # Reference derived features from 479 Irish parcels:
+    # Crop              amp    spring-win  seasonal_amp
+    # Permanent Pasture +0.15   -4.21        varies
+    # Spring Barley     +5.57   -3.13        varies
+    # Oilseed Rape      -2.84   -9.48        varies
+    # Winter Wheat      -9.74   -5.40        varies
+    # Oats             +11.55  -11.28        varies
+    # Spring Wheat     -15.51   -9.50        varies
+
+    # RULE 1 — VV range primary discriminator
     if vv_range is not None:
         if vv_range < 100:
-            crop_scores["Grassland"] += 40
-            evidence.append(f"Low VV range ({vv_range}) — stable year-round signal (grassland)")
-        elif vv_range > 180:
-            for c in ["Spring Barley", "Winter Wheat", "Oilseed Rape"]:
-                crop_scores[c] += 20
-            evidence.append(f"High VV range ({vv_range}) — strong seasonal variation (arable)")
+            crop_scores["Grassland"] += 70
+            evidence.append(f"VV range {vv_range} < 100 → Permanent Pasture (ref: 71.54)")
+        elif vv_range < 160:
+            crop_scores["Oats"] += 30
+            crop_scores["Spring Barley"] += 15
+            evidence.append(f"VV range {vv_range} 100-160 → Oats/Spring Wheat range")
+        elif vv_range < 200:
+            crop_scores["Winter Wheat"] += 30
+            crop_scores["Oilseed Rape"] += 20
+            evidence.append(f"VV range {vv_range} 160-200 → Winter cereal/OSR range")
+        else:
+            crop_scores["Spring Barley"] += 30
+            crop_scores["Oilseed Rape"] += 25
+            evidence.append(f"VV range {vv_range} > 200 → Spring Barley/OSR range")
 
-    # 2. Winter VH level
+    # RULE 2 — Winter VH level
     if winter_vh is not None:
         if winter_vh > 38:
-            crop_scores["Oats"] += 35
-            evidence.append(f"Very high winter VH ({round(winter_vh,1)}) — oats signature")
-        elif winter_vh > 30:
+            crop_scores["Oats"] += 50
+            evidence.append(f"Winter VH {round(winter_vh,1)} > 38 → Oats (ref: 41.31)")
+        elif winter_vh > 31:
             crop_scores["Oilseed Rape"] += 20
-            crop_scores["Oats"] += 10
-            evidence.append(f"High winter VH ({round(winter_vh,1)}) — established crop")
-        elif winter_vh < 20:
-            crop_scores["Spring Barley"] += 25
-            evidence.append(f"Low winter VH ({round(winter_vh,1)}) — bare soil (spring sown)")
+            evidence.append(f"Winter VH {round(winter_vh,1)} 31-38 → OSR range (ref: 32.62)")
+        elif winter_vh < 22:
+            crop_scores["Grassland"] += 10
+            evidence.append(f"Winter VH {round(winter_vh,1)} < 22 — low winter biomass")
 
-    # 3. Spring VH trend
-    if spring_vh is not None and winter_vh is not None:
-        spring_rise = spring_vh - winter_vh
-        if spring_rise > 10:
-            crop_scores["Spring Barley"] += 20
-            crop_scores["Winter Wheat"] += 15
-            evidence.append(f"Rising spring VH (+{round(spring_rise,1)}) — canopy development")
-            events.append({
-                "event": "Canopy development",
-                "period": "Spring",
-                "signal": f"+{round(spring_rise,1)} VH"
-            })
-        elif spring_rise < -5:
-            crop_scores["Oilseed Rape"] += 25
-            evidence.append(f"Spring VH dip ({round(spring_rise,1)}) — flowering signature (OSR)")
-            events.append({
-                "event": "Flowering detected",
-                "period": "March-April",
-                "signal": f"{round(spring_rise,1)} VH dip"
-            })
+    # RULE 3 — VH amplitude (summer - winter) — key cereal separator
+    # References: OSR -2.84, Grassland +0.15, Barley +5.57, Oats +11.55
+    #             Winter Wheat -9.74, Spring Wheat -15.51
+    if vh_amplitude is not None:
+        if vh_amplitude > 8:
+            crop_scores["Oats"] += 50
+            evidence.append(f"VH amplitude +{vh_amplitude} > 8 → Oats (ref: +11.55)")
+        elif vh_amplitude > 3:
+            crop_scores["Spring Barley"] += 45
+            evidence.append(f"VH amplitude +{vh_amplitude} 3-8 → Spring Barley (ref: +5.57)")
+        elif vh_amplitude > -2:
+            crop_scores["Grassland"] += 25
+            evidence.append(f"VH amplitude {vh_amplitude} near zero → Grassland (ref: +0.15)")
+        elif vh_amplitude > -7:
+            crop_scores["Oilseed Rape"] += 35
+            evidence.append(f"VH amplitude {vh_amplitude} -2 to -7 → OSR (ref: -2.84)")
+        elif vh_amplitude > -13:
+            crop_scores["Winter Wheat"] += 45
+            evidence.append(f"VH amplitude {vh_amplitude} -7 to -13 → Winter Wheat (ref: -9.74)")
+        else:
+            crop_scores["Spring Barley"] += 35
+            evidence.append(f"VH amplitude {vh_amplitude} < -13 → Spring Wheat (ref: -15.51)")
 
-    # 4. Summer VH
-    if summer_vh is not None:
-        if summer_vh < 16:
-            crop_scores["Spring Barley"] += 30
-            crop_scores["Winter Wheat"] += 20
-            evidence.append(f"Low summer VH ({round(summer_vh,1)}) — harvest or senescence")
-            events.append({
-                "event": "Harvest approaching",
-                "period": "Summer",
-                "signal": f"VH {round(summer_vh,1)}"
-            })
-        elif summer_vh > 40:
+    # RULE 4 — Spring minus winter (OSR flowering dip + Oats distinction)
+    # References: OSR -9.48, Oats -11.28, Wheat -5.40, Barley -3.13
+    if spring_minus_winter is not None:
+        if spring_minus_winter < -9:
+            crop_scores["Oilseed Rape"] += 35
             crop_scores["Oats"] += 20
-            crop_scores["Grassland"] += 15
-            evidence.append(f"High summer VH ({round(summer_vh,1)}) — dense biomass")
+            evidence.append(f"Spring-winter {round(spring_minus_winter,1)} < -9 → OSR flowering or Oats (ref: OSR -9.48, Oats -11.28)")
+            events.append({"event": "Flowering/peak detected", "period": "March-April",
+                          "signal": f"{round(spring_minus_winter,1)} VH dip"})
+        elif spring_minus_winter < -4:
+            crop_scores["Winter Wheat"] += 25
+            evidence.append(f"Spring-winter {round(spring_minus_winter,1)} -4 to -9 → Winter Wheat (ref: -5.40)")
+        elif spring_minus_winter < -1:
+            crop_scores["Spring Barley"] += 15
+            evidence.append(f"Spring-winter {round(spring_minus_winter,1)} → Spring Barley range (ref: -3.13)")
 
-    # 5. Sudden VH drops — grazing or harvest events
+    # RULE 5 — Monthly growth rates (cereal subtype discriminator)
+    # Peak month tells us crop type
+    if peak_month is not None:
+        if peak_month in [6, 7]:
+            crop_scores["Oats"] += 20
+            crop_scores["Spring Barley"] += 15
+            evidence.append(f"Peak VH in month {peak_month} (Jun/Jul) → Spring cereal")
+        elif peak_month in [4, 5]:
+            crop_scores["Winter Wheat"] += 25
+            evidence.append(f"Peak VH in month {peak_month} (Apr/May) → Winter cereal")
+        elif peak_month in [11, 12, 1]:
+            crop_scores["Oilseed Rape"] += 25
+            evidence.append(f"Peak VH in month {peak_month} (Nov-Jan) → OSR established")
+        elif peak_month in [2, 3, 8, 9, 10]:
+            crop_scores["Grassland"] += 15
+            evidence.append(f"Peak VH in month {peak_month} → Grassland pattern")
+
+    # Trough month
+    if trough_month is not None:
+        if trough_month in [1, 2, 3]:
+            crop_scores["Spring Barley"] += 15
+            crop_scores["Oats"] += 15
+            evidence.append(f"Trough VH in month {trough_month} (Jan-Mar) → Spring sown (bare soil winter)")
+        elif trough_month in [7, 8]:
+            crop_scores["Winter Wheat"] += 20
+            crop_scores["Spring Barley"] += 10
+            evidence.append(f"Trough VH in month {trough_month} (Jul/Aug) → Summer harvest")
+
+    # Apr-May growth rate
+    if apr_may_rate is not None:
+        if apr_may_rate > 5:
+            crop_scores["Spring Barley"] += 20
+            crop_scores["Oats"] += 15
+            evidence.append(f"Strong Apr-May growth +{apr_may_rate} → Spring cereal tillering")
+        elif apr_may_rate < -5:
+            crop_scores["Oilseed Rape"] += 20
+            evidence.append(f"Apr-May decline {apr_may_rate} → OSR post-flowering")
+
+    # Jun-Jul decline rate
+    if jun_jul_rate is not None:
+        if jun_jul_rate < -10:
+            crop_scores["Winter Wheat"] += 25
+            crop_scores["Spring Barley"] += 15
+            evidence.append(f"Sharp Jun-Jul decline {jun_jul_rate} → Harvest/senescence")
+        elif jun_jul_rate < -5:
+            crop_scores["Winter Wheat"] += 15
+            evidence.append(f"Jun-Jul decline {jun_jul_rate} → Ripening")
+        elif jun_jul_rate > 3:
+            crop_scores["Oats"] += 20
+            evidence.append(f"Jun-Jul rise +{jun_jul_rate} → Oats late heading")
+
+    # RULE 6 — Sudden VH drops
     vh_vals = [v for _, v in all_vh if v]
     for i in range(1, len(vh_vals)):
         drop = vh_vals[i-1] - vh_vals[i]
         if drop > 15:
             date = all_vh[i][0]
-            events.append({
-                "event": "Grazing or harvest event",
-                "date": date,
-                "signal": f"-{round(drop,1)} VH drop"
-            })
             if vv_range and vv_range < 100:
-                evidence.append(f"Sudden VH drop on {date} — likely grazing event")
+                events.append({"event": "Grazing event", "date": date,
+                              "signal": f"-{round(drop,1)} VH"})
+                evidence.append(f"VH drop {round(drop,1)} on {date} → grazing")
             else:
-                evidence.append(f"Sudden VH drop on {date} — possible harvest")
+                events.append({"event": "Harvest detected", "date": date,
+                              "signal": f"-{round(drop,1)} VH"})
+                evidence.append(f"VH drop {round(drop,1)} on {date} → harvest")
 
     # === DETERMINE CROP TYPE ===
     best_crop = max(crop_scores, key=crop_scores.get)
@@ -176,9 +307,65 @@ def analyse_time_series(observations):
     total = sum(crop_scores.values())
 
     if total > 0:
-        confidence = min(95, round(best_score / total * 150))
+        # Classification score = actual top probability from ranking table
+        # Calculated after softmax, so it matches the displayed ranking
+        classification_score = 0  # will be set after confidence_table is built
     else:
-        confidence = 20
+        classification_score = 20
+
+    # Build ranked confidence table using softmax-style probabilities
+    # Add small prior to all crops to avoid 0%
+    prior = 2
+    ranked = sorted(crop_scores.items(), key=lambda x: x[1], reverse=True)
+    total_score = max(sum(v + prior for v in crop_scores.values()), 1)
+    confidence_table = [
+        {
+            "crop": crop,
+            "score": score,
+            "pct": round((score + prior) / total_score * 100)
+        }
+        for crop, score in ranked
+    ]
+
+    # Cap confidence based on feature availability
+    n_features = sum([
+        vv_range is not None,
+        winter_vh is not None,
+        spring_vh is not None,
+        summer_vh is not None,
+        len(all_vh) >= 10,
+        len(events) > 0
+    ])
+    # Max confidence scales with feature count
+    top_pct = confidence_table[0]["pct"] if confidence_table else 0
+    classification_score = top_pct  # matches ranking display exactly
+    max_confidence = {6: 92, 5: 85, 4: 78, 3: 68, 2: 55, 1: 40, 0: 20}
+    feature_cap = max_confidence.get(n_features, 55)
+    operational_confidence = min(feature_cap, top_pct)
+
+    # Detect uncertainty — top two crops within 15%
+    second_pct = confidence_table[1]["pct"] if len(confidence_table) > 1 else 0
+    uncertain = (top_pct - second_pct) < 15
+    confidence = operational_confidence  # keep for backward compat
+    if uncertain:
+        uncertainty_note = (
+            f"Classification uncertain — {confidence_table[0]['crop']} "
+            f"({top_pct}%) vs {confidence_table[1]['crop']} "
+            f"({second_pct}%) — farmer confirmation recommended"
+        )
+    else:
+        uncertainty_note = None
+
+    # Feature sufficiency note
+    feature_note = (
+        f"Based on {n_features}/6 features: "
+        f"{'VV range ' if vv_range else ''}"
+        f"{'Winter VH ' if winter_vh else ''}"
+        f"{'Spring VH ' if spring_vh else ''}"
+        f"{'Summer VH ' if summer_vh else ''}"
+        f"{'Time series ' if len(all_vh) >= 10 else ''}"
+        f"{'Events ' if events else ''}"
+    ).strip()
 
     # Determine current growth phase
     current_month = datetime.now().month
@@ -186,33 +373,51 @@ def analyse_time_series(observations):
                                           monthly, spring_vh, summer_vh)
 
     return {
-        "crop_type": best_crop,
-        "confidence": confidence,
+        "crop_type": best_crop if not uncertain else "Uncertain",
+        "top_crop": best_crop,
+        "classification_score": classification_score,
+        "confidence": operational_confidence,
+        "confidence_table": confidence_table,
+        "uncertain": uncertain,
+        "uncertainty_note": uncertainty_note,
         "evidence": evidence,
         "growth_phase": growth_phase,
         "key_events": events,
-        "scores": crop_scores,
         "seasonal_vh": {
             "winter": round(float(winter_vh), 2) if winter_vh else None,
             "spring": round(float(spring_vh), 2) if spring_vh else None,
             "summer": round(float(summer_vh), 2) if summer_vh else None
         },
         "vv_range": vv_range,
-        "method": "SAR time series analysis"
+        "method": "SAR time series analysis",
+        "feature_note": feature_note,
+        "n_features": n_features
     }
 
 
 def determine_growth_phase(crop, month, monthly, spring_vh, summer_vh):
     """Determine current growth phase from crop and month"""
     if crop == "Grassland":
-        if month in [3, 4, 5, 6]:
-            return "Active growth — peak season"
-        elif month in [7, 8, 9]:
-            return "Summer growth — monitor cover"
-        elif month in [10, 11]:
-            return "Autumn flush — reducing"
+        # Use VH trend to refine grassland stage
+        if month in [2, 3]:
+            return "Spring Recovery — growth restarting"
+        elif month in [4, 5]:
+            return "Rapid Growth — high demand period"
+        elif month == 6:
+            # Check if VH declining (post-grazing) or stable
+            if summer_vh and spring_vh and summer_vh < spring_vh - 3:
+                return "Post-Grazing Recovery"
+            return "Peak Growth — graze or cut decision"
+        elif month in [7, 8]:
+            if summer_vh and summer_vh < 15:
+                return "Post-Grazing Recovery"
+            return "Summer Growth — monitor cover"
+        elif month in [9, 10]:
+            return "Autumn Flush — reducing growth"
+        elif month == 11:
+            return "Late Season — prepare for housing"
         else:
-            return "Winter — slow growth"
+            return "Winter — very slow growth"
 
     elif crop == "Spring Barley":
         if month in [3, 4]:
@@ -285,9 +490,19 @@ if __name__ == "__main__":
         obs = json.load(f)
 
     result = analyse_time_series(obs)
-    print(f"Crop type:    {result['crop_type']}")
-    print(f"Confidence:   {result['confidence']}%")
-    print(f"Growth phase: {result['growth_phase']}")
+    print(f"Crop type:           {result['crop_type']}")
+    print(f"Classification Score: {result['classification_score']}%")
+    print(f"Operational Conf:     {result['confidence']}%")
+    print(f"Uncertain:            {result['uncertain']}")
+    print(f"Growth phase:         {result['growth_phase']}")
+    print(f"\nClassification Rankings:")
+    for r in result['confidence_table']:
+        bar = "█" * (r['pct'] // 5)
+        print(f"  {r['crop']:<20} {bar:<20} {r['pct']}%")
+    if result['uncertainty_note']:
+        print(f"\n⚠ {result['uncertainty_note']}")
+    print(f"\nFeature sufficiency: {result.get('feature_note')}")
+    print(f"Features used: {result.get('n_features')}/6")
     print(f"\nEvidence:")
     for e in result['evidence']:
         print(f"  → {e}")
