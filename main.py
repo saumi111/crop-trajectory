@@ -433,6 +433,25 @@ async def ecostress_et(lat: float, lng: float, days: int = 90):
         return {"error": str(e)}
 
 
+@app.get("/ecostress_products")
+async def ecostress_products():
+    """List all available ECOSTRESS products"""
+    import requests as req
+    username = os.environ.get("NASA_EARTHDATA_USER", "")
+    password = os.environ.get("NASA_EARTHDATA_PASS", "")
+    APPEEARS = "https://appeears.earthdatacloud.nasa.gov/api"
+    login_r = req.post(f"{APPEEARS}/login", auth=(username, password), timeout=30)
+    token = login_r.json().get("token")
+    r = req.get(f"{APPEEARS}/product",
+                headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    products = r.json()
+    eco = [{"product": p["ProductAndVersion"],
+            "description": p.get("Description",""),
+            "resolution": p.get("Resolution","")}
+           for p in products if "ECO" in p.get("ProductAndVersion","")]
+    return {"ecostress_products": eco, "total": len(eco)}
+
+
 @app.get("/ecostress_task")
 async def ecostress_task_status(id: str):
     """Check status of a pending AppEEARS task"""
