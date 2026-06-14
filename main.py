@@ -435,8 +435,41 @@ def parcel_intelligence(request: ParcelRequest):
             analysis["field_analysis"]["parcel_confidence"] = "HIGH"
             analysis["field_analysis"].pop("growth_model_confidence", None)
 
+            # Run correct crop growth model based on DAFM crop type
+            if mapped_crop == "Spring Barley":
+                from models.spring_barley import get_spring_barley_stage
+                barley_result = get_spring_barley_stage(available, weather_data if 'weather_data' in dir() else {})
+                analysis["field_analysis"]["current_stage"] = barley_result.get("stage_label", "Spring Barley — Growing")
+                analysis["field_analysis"]["yield_estimate_tha"] = barley_result.get("yield_estimate_tha")
+                analysis["field_analysis"]["management_alerts"] = barley_result.get("management_alerts", [])
+                analysis["growth_model"] = {"system": "spring_barley", "crop": "Spring Barley", **barley_result}
+
+            elif mapped_crop == "Winter Wheat":
+                from models.winter_wheat import get_winter_wheat_stage
+                wheat_result = get_winter_wheat_stage(available, weather_data if 'weather_data' in dir() else {})
+                analysis["field_analysis"]["current_stage"] = wheat_result.get("stage_label", "Winter Wheat — Growing")
+                analysis["field_analysis"]["yield_estimate_tha"] = wheat_result.get("yield_estimate_tha")
+                analysis["field_analysis"]["management_alerts"] = wheat_result.get("management_alerts", [])
+                analysis["growth_model"] = {"system": "winter_wheat", "crop": "Winter Wheat", **wheat_result}
+
+            elif mapped_crop == "Oilseed Rape":
+                from models.oilseed_rape import get_osr_stage
+                osr_result = get_osr_stage(available, weather_data if 'weather_data' in dir() else {})
+                analysis["field_analysis"]["current_stage"] = osr_result.get("stage_label", "Oilseed Rape — Growing")
+                analysis["field_analysis"]["yield_estimate_tha"] = osr_result.get("yield_estimate_tha")
+                analysis["field_analysis"]["management_alerts"] = osr_result.get("management_alerts", [])
+                analysis["growth_model"] = {"system": "oilseed_rape", "crop": "Oilseed Rape", **osr_result}
+
+            elif mapped_crop == "Potato":
+                from models.potato import get_potato_stage
+                potato_result = get_potato_stage(available, weather_data if 'weather_data' in dir() else {})
+                analysis["field_analysis"]["current_stage"] = potato_result.get("stage_label", "Potato — Growing")
+                analysis["field_analysis"]["yield_estimate_tha"] = potato_result.get("yield_estimate_tha")
+                analysis["field_analysis"]["management_alerts"] = potato_result.get("management_alerts", [])
+                analysis["growth_model"] = {"system": "potato", "crop": "Potato", **potato_result}
+
             # Override growth model for grassland
-            if mapped_crop == "Grassland":
+            elif mapped_crop == "Grassland":
                 # Calculate grass RVI trend
                 rvi_vals = [o["rvi"] for o in available if o.get("rvi")]
                 recent = rvi_vals[-3:] if len(rvi_vals) >= 3 else rvi_vals
