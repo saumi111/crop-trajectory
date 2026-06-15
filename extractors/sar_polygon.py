@@ -1,237 +1,185 @@
 """
-SAR Polygon Extractor
-Extracts SAR statistics within a field polygon
-Rather than a point average
-
-Input: GeoJSON polygon coordinates
-Output: VV, VH, RVI statistics for pixels within boundary
-
-This gives true field-level SAR signal
-not a 2km area average around a point
+SAR Polygon Extractor — Element84 STAC + COG (GCP georeferencing)
+Free — no CDSE processing units required
+Direct HTTP range reads from S3 COGs
 """
 
 import requests
 import numpy as np
-from datetime import datetime, timedelta
-import os
+import struct
+import zlib
+from numpy.linalg import lstsq
 
 
-CDSE_PROCESS_URL = "https://sh.dataspace.copernicus.eu/api/v1/process"
+STAC_URL = "https://earth-search.aws.element84.com/v1"
 
 
 def polygon_to_bbox(polygon_coords):
-    """
-    Get bounding box from polygon coordinates
-    polygon_coords: list of [lng, lat] pairs
-    Returns: [min_lng, min_lat, max_lng, max_lat]
-    """
     lngs = [p[0] for p in polygon_coords]
-    lats = [p[1] for p in polygon_coords]
+    lats  = [p[1] for p in polygon_coords]
     return [min(lngs), min(lats), max(lngs), max(lats)]
 
 
-def get_sar_polygon(polygon_coords, date, token,
-                    resolution_m=10):
-    """
-    Get SAR statistics within a field polygon
-    
-    Args:
-        polygon_coords: list of [lng, lat] pairs
-        date: date string YYYY-MM-DD
-        token: CDSE access token
-        resolution_m: pixel resolution in metres
-    
-    Returns:
-        dict with VV, VH, RVI mean and std
-    """
-    d = datetime.strptime(date, "%Y-%m-%d")
-    d_from = (d - timedelta(days=3)).strftime("%Y-%m-%dT00:00:00Z")
-    d_to = (d + timedelta(days=3)).strftime("%Y-%m-%dT23:59:59Z")
+def s3_to_https(url):
+    if url.startswith("s3://"):
+        parts = url[5:].split("/", 1)
+        return f"https://{parts[0]}.s3.amazonaws.com/{parts[1]}"
+    return url
 
+
+def fetch_range(url, start, end, timeout=30):
+    r = requests.get(url, headers={"Range": f"bytes={start}-{end-1}"}, timeout=timeout)
+    if r.status_code not in [200, 206]:
+        raise Exception(f"HTTP {r.status_code}")
+    return r.content
+
+
+def read_pixel_gcp(url, target_lat, target_lng):
+    """Read pixel from GeoTIFF COG using GCP-based georeferencing"""
+    fmt = "<"
+    try:
+        header = fetch_range(url, 0, 65536)
+
+        ifd_offset = struct.unpack_from(f"{fmt}I", header, 4)[0]
+        n_tags = struct.unpack_from(f"{fmt}H", header, ifd_offset)[0]
+
+        tags = {}
+        for i in range(n_tags):
+            off = ifd_offset + 2 + i * 12
+            if off + 12 > len(header): break
+            tag = struct.unpack_from(f"{fmt}H", header, off)[0]
+            typ = struct.unpack_from(f"{fmt}H", header, off+2)[0]
+            cnt = struct.unpack_from(f"{fmt}I", header, off+4)[0]
+            val = struct.unpack_from(f"{fmt}I", header, off+8)[0]
+            tags[tag] = (typ, cnt, val)
+
+        width  = tags[256][2]; height = tags[257][2]
+        tile_w = tags[322][2]; tile_h = tags[323][2]
+        tile_off_ptr   = tags[324][2]; n_tiles_count = tags[324][1]
+        tile_byte_ptr  = tags[325][2]
+
+        # Read GCPs (tag 33922)
+        tie_off = tags[33922][2]; tie_cnt = tags[33922][1]
+        tie_data = fetch_range(url, tie_off, tie_off + tie_cnt * 8)
+
+        gcps = []
+        for i in range(tie_cnt // 6):
+            o = i * 48
+            px = struct.unpack_from(f"{fmt}d", tie_data, o)[0]
+            py = struct.unpack_from(f"{fmt}d", tie_data, o+8)[0]
+            gx = struct.unpack_from(f"{fmt}d", tie_data, o+24)[0]
+            gy = struct.unpack_from(f"{fmt}d", tie_data, o+32)[0]
+            gcps.append((px, py, gx, gy))
+
+        cols = np.array([g[0] for g in gcps])
+        rows = np.array([g[1] for g in gcps])
+        lngs = np.array([g[2] for g in gcps])
+        lats = np.array([g[3] for g in gcps])
+
+        A = np.column_stack([lngs, lats, np.ones(len(gcps))])
+        col_c, _, _, _ = lstsq(A, cols, rcond=None)
+        row_c, _, _, _ = lstsq(A, rows, rcond=None)
+
+        est_col = int(col_c[0]*target_lng + col_c[1]*target_lat + col_c[2])
+        est_row = int(row_c[0]*target_lng + row_c[1]*target_lat + row_c[2])
+
+        if not (0 <= est_col < width and 0 <= est_row < height):
+            return None
+
+        # Find and read tile
+        tiles_across = (width + tile_w - 1) // tile_w
+        tx = est_col // tile_w; ty = est_row // tile_h
+        tile_idx = ty * tiles_across + tx
+
+        off_data  = fetch_range(url, tile_off_ptr,  tile_off_ptr  + n_tiles_count * 4)
+        size_data = fetch_range(url, tile_byte_ptr, tile_byte_ptr + n_tiles_count * 4)
+        t_offset = struct.unpack_from(f"{fmt}I", off_data,  tile_idx * 4)[0]
+        t_size   = struct.unpack_from(f"{fmt}I", size_data, tile_idx * 4)[0]
+
+        if t_size == 0: return None
+
+        tile_raw = fetch_range(url, t_offset, t_offset + t_size)
+        try:    raw = zlib.decompress(tile_raw)
+        except:
+            try: raw = zlib.decompress(tile_raw, -15)
+            except: raw = tile_raw
+
+        lc = est_col % tile_w; lr = est_row % tile_h
+        px_off = (lr * tile_w + lc) * 2
+        if px_off + 2 > len(raw): return None
+
+        dn = struct.unpack_from(f"{fmt}H", raw, px_off)[0]
+        if dn == 0: return None
+
+        sigma0 = (dn * dn) / (600 * 600)
+        return round(10 * np.log10(sigma0 + 1e-10), 3)
+
+    except Exception:
+        return None
+
+
+def get_sar_timeseries_polygon(polygon_coords, start_date, end_date,
+                                client_id, client_secret, interval_days=12):
+    """
+    Extract SAR time series for a polygon using Element84 STAC + COG.
+    Free — no CDSE processing units required.
+    client_id and client_secret are unused (kept for API compatibility).
+    """
     bbox = polygon_to_bbox(polygon_coords)
+    lat_c = (bbox[1] + bbox[3]) / 2
+    lng_c = (bbox[0] + bbox[2]) / 2
 
-    evalscript = """
-//VERSION=3
-function setup() {
-  return {
-    input: [{
-      bands: ["VV", "VH"],
-      units: "LINEAR_POWER"
-    }],
-    output: {bands: 3, sampleType: "FLOAT32"}
-  };
-}
-function evaluatePixel(s) {
-  var vv = s.VV * 1000;
-  var vh = s.VH * 1000;
-  var rvi = (4 * vh) / (vv + vh + 0.0001);
-  return [vv, vh, rvi];
-}
-"""
-
-    # Calculate output dimensions from bbox and resolution
-    lng_range = bbox[2] - bbox[0]
-    lat_range = bbox[3] - bbox[1]
-    # Approximate pixels needed
-    width = max(10, min(100, int(lng_range * 111000 / resolution_m)))
-    height = max(10, min(100, int(lat_range * 111000 / resolution_m)))
-
-    payload = {
-        "input": {
-            "bounds": {
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [polygon_coords]
-                },
-                "properties": {
-                    "crs": "http://www.opengis.net/def/crs/EPSG/0/4326"
-                }
-            },
-            "data": [{
-                "type": "sentinel-1-grd",
-                "dataFilter": {
-                    "timeRange": {"from": d_from, "to": d_to},
-                    "acquisitionMode": "IW",
-                    "polarization": "DV"
-                },
-                "processing": {
-                    "orthorectify": True,
-                    "backCoeff": "GAMMA0_TERRAIN"
-                }
-            }]
-        },
-        "evalscript": evalscript,
-        "output": {
-            "width": width,
-            "height": height,
-            "responses": [{
-                "identifier": "default",
-                "format": {"type": "image/tiff"}
-            }]
-        }
-    }
-
+    # Search all S1 scenes in date range
     try:
         r = requests.post(
-            CDSE_PROCESS_URL,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
+            f"{STAC_URL}/search",
+            json={
+                "collections": ["sentinel-1-grd"],
+                "bbox": bbox,
+                "datetime": f"{start_date}T00:00:00Z/{end_date}T23:59:59Z",
+                "limit": 200
             },
             timeout=30
         )
-
-        if r.status_code == 200:
-            import tifffile, io
-            arr = tifffile.imread(io.BytesIO(r.content))
-
-            if arr is not None and arr.size > 0:
-                if len(arr.shape) == 3:
-                    vv_band = arr[:,:,0].flatten()
-                    vh_band = arr[:,:,1].flatten()
-                    rvi_band = arr[:,:,2].flatten()
-                else:
-                    return {"date": date, "available": False}
-
-                vv_valid = vv_band[vv_band > 0]
-                vh_valid = vh_band[vh_band > 0]
-                rvi_valid = rvi_band[(rvi_band > 0) & (rvi_band < 1)]
-
-                if len(vv_valid) > 0:
-                    return {
-                        "date": date,
-                        "available": True,
-                        "pixels": len(vv_valid),
-                        "vv_mean": round(float(np.mean(vv_valid)), 4),
-                        "vv_std": round(float(np.std(vv_valid)), 4),
-                        "vh_mean": round(float(np.mean(vh_valid)), 4),
-                        "vh_std": round(float(np.std(vh_valid)), 4),
-                        "rvi_mean": round(float(np.mean(rvi_valid)), 4),
-                        "rvi_std": round(float(np.std(rvi_valid)), 4),
-                        # Field variability — high std = variable crop
-                        "field_variability": round(
-                            float(np.std(rvi_valid) / np.mean(rvi_valid))
-                            if np.mean(rvi_valid) > 0 else 0, 4)
-                    }
-
-        return {"date": date, "available": False,
-                "error": f"HTTP {r.status_code}"}
-
-    except Exception as e:
-        return {"date": date, "available": False, "error": str(e)}
-
-
-def get_sar_timeseries_polygon(polygon_coords,
-                                start_date, end_date,
-                                client_id, client_secret,
-                                interval_days=12):
-    """
-    Get SAR time series for a field polygon
-    Returns field-level statistics at each date
-    """
-    from extractors.sar_timeseries import get_cdse_token
-
-    token = get_cdse_token(client_id, client_secret)
-    if not token:
+        if r.status_code != 200:
+            return []
+        features = r.json().get("features", [])
+    except Exception:
         return []
 
-    results = []
-    current = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
+    observations = []
+    seen_dates = set()
 
-    while current <= end:
-        date_str = current.strftime("%Y-%m-%d")
+    for f in features:
+        date_str = f["properties"].get("datetime", "")[:10]
+        if not date_str or date_str in seen_dates:
+            continue
+        seen_dates.add(date_str)
+
+        vh_url = s3_to_https(f["assets"].get("vh", {}).get("href", ""))
+        vv_url = s3_to_https(f["assets"].get("vv", {}).get("href", ""))
+
+        if not vh_url:
+            observations.append({"date": date_str, "available": False})
+            continue
+
         print(f"Fetching SAR polygon {date_str}...")
-        obs = get_sar_polygon(polygon_coords, date_str, token)
-        # Rename for compatibility with point extractor
-        if obs.get("available"):
-            obs["vv"] = obs.get("vv_mean")
-            obs["vh"] = obs.get("vh_mean")
-            obs["rvi"] = obs.get("rvi_mean")
-        results.append(obs)
-        current += timedelta(days=interval_days)
 
-    return results
+        vh_db = read_pixel_gcp(vh_url, lat_c, lng_c)
+        vv_db = read_pixel_gcp(vv_url, lat_c, lng_c) if vv_url else None
 
+        if vh_db is not None:
+            vh_lin = 10 ** (vh_db / 10)
+            vv_lin = 10 ** (vv_db / 10) if vv_db else None
+            rvi = round(min(1.0, (4*vh_lin)/((vv_lin or vh_lin)+vh_lin+1e-10)), 4) if vv_lin else None
+            observations.append({
+                "date":      date_str,
+                "available": True,
+                "vh":        vh_db,
+                "vv":        vv_db,
+                "rvi":       rvi
+            })
+        else:
+            observations.append({"date": date_str, "available": False})
 
-if __name__ == "__main__":
-    import os, sys, json
-    sys.path.insert(0, '/workspaces/crop-trajectory')
-
-    os.environ['CDSE_CLIENT_ID'] = \
-        'sh-6e5978f5-f5d6-43d6-874d-720d84121683'
-    os.environ['CDSE_CLIENT_SECRET'] = \
-        'yrMEXQ5drlF26yrB4sTEXfWOIwKtB1fP'
-
-    # Test with a real Irish field polygon
-    # Small arable field in Co. Meath
-    test_polygon = [
-        [-6.68, 53.66],
-        [-6.67, 53.66],
-        [-6.67, 53.65],
-        [-6.68, 53.65],
-        [-6.68, 53.66]
-    ]
-
-    print("Testing SAR Polygon Extractor — Ireland")
-    print(f"Field polygon: {len(test_polygon)} vertices")
-    bbox = polygon_to_bbox(test_polygon)
-    print(f"Bounding box: {bbox}")
-
-    results = get_sar_timeseries_polygon(
-        test_polygon,
-        "2026-04-01",
-        "2026-06-12",
-        os.environ['CDSE_CLIENT_ID'],
-        os.environ['CDSE_CLIENT_SECRET'],
-        interval_days=12
-    )
-
-    available = [r for r in results if r.get("available")]
-    print(f"\nGot {len(available)} observations")
-    print("\nDate        VV_mean  VH_mean  RVI     Pixels  Variability")
-    for r in available:
-        print(f"{r['date']}  {r['vv_mean']:6.2f}   "
-              f"{r['vh_mean']:5.2f}    {r['rvi_mean']:.4f}  "
-              f"{r['pixels']:5}   {r['field_variability']:.4f}")
+    return sorted(observations, key=lambda x: x["date"])
