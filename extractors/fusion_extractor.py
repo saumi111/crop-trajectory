@@ -249,7 +249,8 @@ def extract_fusion_features(polygon, client_id, client_secret,
     monthly_vv = {m: round(np.mean(v), 3) for m, v in monthly_vv_raw.items()}
 
     # Optical extraction
-    monthly_ndvi, monthly_ndre = get_optical_monthly(polygon, client_id, client_secret, token, start_date=start_date, end_date=end_date)
+    from extractors.s2_optical import get_optical_monthly as _get_optical
+    monthly_ndvi, monthly_ndre = _get_optical(polygon, start_date, end_date)
 
     # Interpolate missing optical months
     def interpolate_monthly(monthly_dict, months=range(1,13)):
