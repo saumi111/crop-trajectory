@@ -118,7 +118,7 @@ def get_optical_monthly(polygon, client_id, client_secret, token=None,
                     px2=(lr2*tile_w+lc2)*2
                     if px2+2<=len(raw):
                         dn2=struct.unpack_from(f"{fmt}H",raw,px2)[0]
-                        if 0 < dn2 < 30000:
+                        if 5 < dn2 < 10000:
                             valid_dns.append(dn2)
             if not valid_dns: return None
             import statistics
@@ -152,7 +152,7 @@ def get_optical_monthly(polygon, client_id, client_secret, token=None,
         if not date_str: continue
         month = int(date_str.split("-")[1])
         cloud = f["properties"].get("eo:cloud_cover", 100)
-        if cloud > 90: continue
+        if cloud > 50: continue
         # Check parcel centroid is well inside scene bbox
         scene_bbox = f.get("bbox", [])
         if scene_bbox:
@@ -173,13 +173,14 @@ def get_optical_monthly(polygon, client_id, client_secret, token=None,
         red = read_s2_pixel(red_url, lat_c, lng_c)
         nir = read_s2_pixel(nir_url, lat_c, lng_c)
         re1 = read_s2_pixel(re1_url, lat_c, lng_c) if re1_url else None
-        if red and nir and red > 0:
+        if red and nir and 5 < red < 10000 and 5 < nir < 15000:
             ndvi = (nir-red)/(nir+red+0.0001)
-            if -1 < ndvi < 1.5:
+            if 0.0 <= ndvi <= 1.0:
                 monthly_ndvi[month] = round(ndvi, 4)
-            if re1 and re1 > 0:
+
+            if re1 and 5 < re1 < 15000:
                 ndre = (nir-re1)/(nir+re1+0.0001)
-                if -1 < ndre < 1.5:
+                if 0.0 <= ndre <= 1.0:
                     monthly_ndre[month] = round(ndre, 4)
 
     return monthly_ndvi, monthly_ndre
