@@ -215,16 +215,20 @@ def extract_fusion_features(polygon, client_id, client_secret,
     """
     token = get_token(client_id, client_secret)
 
-    # SAR extraction
+    # SAR + optical in parallel
+    from concurrent.futures import ThreadPoolExecutor
     if sar_observations is None:
         from extractors.sar_polygon import get_sar_timeseries_polygon
-        sar_obs = get_sar_timeseries_polygon(
-            polygon, start_date, end_date,
-            client_id, client_secret, interval_days=12
-        )
+        from extractors.s2_optical import get_optical_monthly as _get_optical
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_sar = ex.submit(get_sar_timeseries_polygon, polygon, start_date, end_date, client_id, client_secret, 12)
+            f_opt = ex.submit(_get_optical, polygon, start_date, end_date)
+            sar_obs = f_sar.result()
+            _pre_ndvi, _pre_ndre = f_opt.result()
         available = [o for o in sar_obs if o.get("available")]
     else:
         available = [o for o in sar_observations if o.get("available")]
+        _pre_ndvi, _pre_ndre = {}, {}
 
     # Monthly SAR averages
     monthly_vh_raw = {}
@@ -249,8 +253,7 @@ def extract_fusion_features(polygon, client_id, client_secret,
     monthly_vv = {m: round(np.mean(v), 3) for m, v in monthly_vv_raw.items()}
 
     # Optical extraction
-    from extractors.s2_optical import get_optical_monthly as _get_optical
-    monthly_ndvi, monthly_ndre = _get_optical(polygon, start_date, end_date)
+    monthly_ndvi, monthly_ndre = _pre_ndvi, _pre_ndre
 
     # Interpolate missing optical months
     def interpolate_monthly(monthly_dict, months=range(1,13)):
