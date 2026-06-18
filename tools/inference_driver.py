@@ -8,10 +8,19 @@ import math
 import joblib
 import warnings
 warnings.filterwarnings('ignore')
+from datetime import datetime
+
+def get_current_season_window():
+    now = datetime.now()
+    if now.month >= 10:
+        return f'{now.year}-10-01', f'{now.year+1}-09-30'
+    return f'{now.year-1}-10-01', f'{now.year}-09-30'
+
 from rasterio.windows import Window
 
 sys.path.insert(0, '/workspaces/crop-trajectory')
 from extractors.fusion_extractor import extract_fusion_features
+from tools.sar_cache import read_sar_cache, write_sar_cache
 
 def normalize_to_coordinate_ring(geom_input):
     """
@@ -46,7 +55,7 @@ def generate_interior_points(polygon):
     lat_scale = math.cos(math.radians(c_lat))
     return [(c_lat, c_lng), (c_lat, c_lng + (offset_deg / lat_scale)), (c_lat + offset_deg, c_lng)]
 
-def predict_from_observations(polygon_geometry, client_id, client_secret, sar_observations=None, area_ha=5.0, perimeter_m=400.0):
+def predict_from_observations(polygon_geometry, client_id, client_secret, sar_observations=None, area_ha=5.0, perimeter_m=400.0, **kwargs):
     """
     🎯 High-Performance Production Inference Engine:
     Reuses pre-mined SAR telemetry observation vectors to achieve sub-second runtime speeds.
@@ -64,14 +73,26 @@ def predict_from_observations(polygon_geometry, client_id, client_secret, sar_ob
         return {"crop_type": "Unknown", "predicted_crop": "Unknown", "confidence_pct": 0.0, "tier": "Tier3", "automated_delivery": False}
         
     try:
-        feat_dict = extract_fusion_features(
+        start_date, end_date = get_current_season_window()
+        parcel_id = kwargs.get("parcel_id", "UNKNOWN")
+        
+        # Check cache via parcel_id + season key match to optimize network load
+        cached_data, hit = read_sar_cache(parcel_id, start_date) if parcel_id != "UNKNOWN" else (None, False)
+        
+        if hit:
+            feat_dict = cached_data
+        else:
+            feat_dict = extract_fusion_features(
             clean_geom, 
             client_id, 
             client_secret,
             sar_observations=sar_observations,
-            start_date="2024-10-01",
-            end_date="2025-09-30"
+            start_date=start_date,
+            end_date=end_date
         )
+        if feat_dict and isinstance(feat_dict, dict) and not hit and parcel_id != "UNKNOWN":
+            write_sar_cache(parcel_id, start_date, feat_dict)
+            
         if not feat_dict or not isinstance(feat_dict, dict):
             return {"crop_type": "Unknown", "predicted_crop": "Unknown", "confidence_pct": 0.0, "tier": "Tier3", "automated_delivery": False}
     except Exception as e:
