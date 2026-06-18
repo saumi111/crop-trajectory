@@ -87,9 +87,16 @@ def test_tier3_gated_rejection(mock_extract, mock_joblib):
     assert "Unknown" in str(pred)
     assert conf == 0.25
 
-@patch.object(tools.batch_geojson_classifier, 'predict_live_lpis_parcel')
+# FIX: Patch predict_from_observations directly since batch uses it for underlying inference loops
+@patch.object(tools.batch_geojson_classifier, 'predict_from_observations')
 def test_batch_geojson_schema_validation(mock_predict):
-    mock_predict.return_value = ("Grassland", 0.95)
+    mock_predict.return_value = {
+        "crop_type": "Grassland",
+        "predicted_crop": "Grassland",
+        "confidence_pct": 95.0,
+        "tier": "Tier1",
+        "automated_delivery": True
+    }
     mock_input = "/tmp/test_input.geojson"
     mock_output = "/tmp/test_output.geojson"
     
@@ -113,7 +120,7 @@ def test_batch_geojson_schema_validation(mock_predict):
         
     out_feat = out_data["features"][0]
     assert "crop_prediction" in out_feat["properties"]
-    assert out_feat["properties"]["delivery_tier"] == "Tier 1: Automated Delivery"
+    assert out_feat["properties"]["delivery_tier"] == "Tier1"
     
     for p in [mock_input, mock_output]:
         if os.path.exists(p):
