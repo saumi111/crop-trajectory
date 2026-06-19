@@ -1,11 +1,13 @@
 """
-Irish S2 time series extractor — tile-grouped for efficiency.
-Groups parcels by S2 tile, one cold start per tile per dekad.
-Output per parcel: [36, 13] scaled reflectance (BreizhCrops compatible)
+Irish S2 time series extractor — tile-grouped batch mode.
+One file open per band per scene serves ALL parcels on that tile.
+Output: {par_lab: np.array([T, 13])} for all parcels in batch.
 """
-import requests, rasterio, pyproj, numpy as np, time
+import requests, rasterio, pyproj, numpy as np, time, json
 from rasterio.windows import Window
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from collections import defaultdict
 
 BAND_MAP = [
     ('B01','coastal'), ('B02','blue'),    ('B03','green'), ('B04','red'),
@@ -13,111 +15,160 @@ BAND_MAP = [
     ('B8A','nir08'),   ('B09','nir09'),   ('B10',None),    ('B11','swir16'),
     ('B12','swir22')
 ]
-VALID_SCL = {4, 5, 7}
-TARGET_STEPS = 36
+TARGET_STEPS = 32
 
-def search_scenes(bbox, start_date, end_date):
+def dekad_key(date_str):
+    d = datetime.strptime(date_str[:10], "%Y-%m-%d")
+    dk = 1 if d.day<=10 else 2 if d.day<=20 else 3
+    return f"{d.year}{d.month:02d}{dk}"
+
+def search_scenes(bbox, start_date, end_date, max_cloud=80):
     r = requests.post("https://earth-search.aws.element84.com/v1/search",
         json={"collections":["sentinel-2-l2a"],"bbox":bbox,
               "datetime":f"{start_date}T00:00:00Z/{end_date}T23:59:59Z",
-              "query":{"eo:cloud_cover":{"lt":80}},"limit":200},timeout=15)
+              "query":{"eo:cloud_cover":{"lt":max_cloud}},"limit":200},timeout=15)
     if r.status_code!=200: return []
     return sorted(r.json().get("features",[]),
                   key=lambda f: f["properties"]["datetime"])
 
-def dekad_key(date_str):
-    from datetime import datetime
-    d = datetime.strptime(date_str[:10],"%Y-%m-%d")
-    dk = 1 if d.day<=10 else 2 if d.day<=20 else 3
-    return f"{d.year}{d.month:02d}{dk}"
-
-def read_band_at(args):
-    url, lat_c, lng_c = args
-    if not url: return 0.0
+def read_band_for_centroids(asset_key, assets, centroids_list):
+    """Open one band file, read all centroids in one pass."""
+    if not asset_key: return [0.0]*len(centroids_list)
+    url = assets.get(asset_key,{}).get("href","")
+    if not url: return [0.0]*len(centroids_list)
     try:
         with rasterio.open(f"/vsicurl/{url}") as src:
-            tf = pyproj.Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-            x,y = tf.transform(lng_c, lat_c)
-            row,col = src.index(x,y)
-            if not(0<=row<src.height and 0<=col<src.width): return 0.0
-            win = Window(max(0,col-5),max(0,row-5),11,11)
-            data = src.read(1,window=win).flatten()
-            valid = data[(data>100)&(data<60000)]
-            return float(np.median(valid))*0.0001 if len(valid)>0 else 0.0
-    except: return 0.0
+            tf = pyproj.Transformer.from_crs("EPSG:4326",src.crs,always_xy=True)
+            results = []
+            for lat,lng in centroids_list:
+                x,y = tf.transform(lng,lat)
+                row,col = src.index(x,y)
+                if not(0<=row<src.height and 0<=col<src.width):
+                    results.append(0.0); continue
+                win = Window(max(0,col-5),max(0,row-5),11,11)
+                data = src.read(1,window=win).flatten()
+                valid = data[(data>100)&(data<60000)]
+                results.append(float(np.median(valid))*0.0001 if len(valid)>0 else 0.0)
+            return results
+    except: return [0.0]*len(centroids_list)
 
-def extract_parcel_bands(scene, lat_c, lng_c):
-    """Extract all 13 bands for one parcel from one scene in parallel."""
-    assets = scene["assets"]
-    args = []
-    for bname, asset_key in BAND_MAP:
-        if asset_key is None:
-            args.append(("", lat_c, lng_c))
-        else:
-            url = assets.get(asset_key,{}).get("href","")
-            args.append((url, lat_c, lng_c))
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        vals = list(ex.map(read_band_at, args))
-    return vals
+def extract_batch(parcels_with_labels, start_date, end_date):
+    """
+    Extract S2 time series for a batch of parcels.
+    Args:
+        parcels_with_labels: list of (par_lab, label, polygon)
+    Returns:
+        dict: {par_lab: {"label":str, "timeseries":np.array([T,13])}}
+    """
+    # Compute centroids
+    centroids = []
+    par_labs = []
+    labels = []
+    for par_lab, label, polygon in parcels_with_labels:
+        lngs=[c[0] for c in polygon]; lats=[c[1] for c in polygon]
+        centroids.append(((min(lats)+max(lats))/2,(min(lngs)+max(lngs))/2))
+        par_labs.append(par_lab)
+        labels.append(label)
 
-def get_s2_timeseries(polygon, start_date, end_date):
-    """
-    Extract [36, 13] S2 time series for one parcel.
-    Returns (tensor, dates) or None.
-    """
-    lngs=[c[0] for c in polygon]; lats=[c[1] for c in polygon]
-    bbox=[min(lngs),min(lats),max(lngs),max(lats)]
-    lat_c=(bbox[1]+bbox[3])/2; lng_c=(bbox[0]+bbox[2])/2
+    # Use first parcel bbox to find scenes
+    lat0,lng0 = centroids[0]
+    all_lats=[c[0] for c in centroids]; all_lngs=[c[1] for c in centroids]
+    bbox=[min(all_lngs)-0.05,min(all_lats)-0.05,
+          max(all_lngs)+0.05,max(all_lats)+0.05]
 
     scenes = search_scenes(bbox, start_date, end_date)
-    if not scenes: return None
+    if not scenes:
+        print("  No scenes found"); return {}
 
     # Best scene per dekad
     by_dekad = {}
-    for scene in scenes:
-        dk = dekad_key(scene["properties"]["datetime"])
-        cloud = scene["properties"].get("eo:cloud_cover",100)
-        sb = scene.get("bbox",[])
+    for s in scenes:
+        key = dekad_key(s["properties"]["datetime"])
+        cloud = s["properties"].get("eo:cloud_cover",100)
+        sb = s.get("bbox",[])
         if sb:
-            margin = min(lat_c-sb[1],sb[3]-lat_c,lng_c-sb[0],sb[2]-lng_c)
-            if margin < 0.02: continue
-        if dk not in by_dekad or cloud < by_dekad[dk][0]:
-            by_dekad[dk] = (cloud, scene)
+            # Check at least one centroid is in this scene
+            in_scene = any(sb[0]<=lng<=sb[2] and sb[1]<=lat<=sb[3]
+                          for lat,lng in centroids)
+            if not in_scene: continue
+        if key not in by_dekad or cloud < by_dekad[key][0]:
+            by_dekad[key] = (cloud, s)
 
-    if not by_dekad: return None
+    print(f"  {len(by_dekad)} dekads found")
 
-    observations = []
+    # Per-parcel time series storage
+    ts_data = {pl: [] for pl in par_labs}
+
     for dk in sorted(by_dekad.keys()):
         _, scene = by_dekad[dk]
-        bands = extract_parcel_bands(scene, lat_c, lng_c)
-        observations.append(bands)
+        assets = scene["assets"]
 
-    if not observations: return None
+        # Find which centroids are in this scene
+        sb = scene.get("bbox",[])
+        active_indices = [i for i,(lat,lng) in enumerate(centroids)
+                         if not sb or (sb[0]<=lng<=sb[2] and sb[1]<=lat<=sb[3])]
+        active_centroids = [centroids[i] for i in active_indices]
 
-    # Pad to TARGET_STEPS
-    while len(observations) < TARGET_STEPS:
-        observations.append(observations[-1].copy())
-    observations = observations[:TARGET_STEPS]
+        if not active_centroids: continue
 
-    tensor = np.array(observations, dtype=np.float32)  # [36, 13]
-    return tensor
+        # Read all bands in parallel, all active parcels per band
+        band_keys = [ak for _,ak in BAND_MAP]
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            band_results = list(ex.map(
+                lambda ak: read_band_for_centroids(ak, assets, active_centroids),
+                band_keys))
+
+        # band_results[band_idx][parcel_idx]
+        for j, i in enumerate(active_indices):
+            bands = [band_results[b][j] for b in range(len(BAND_MAP))]
+            ts_data[par_labs[i]].append(bands)
+
+    # Build fixed-length tensors
+    results = {}
+    for pl, label in zip(par_labs, labels):
+        obs = ts_data[pl]
+        if not obs: continue
+        while len(obs) < TARGET_STEPS:
+            obs.append(obs[-1].copy())
+        tensor = np.array(obs[:TARGET_STEPS], dtype=np.float32)
+        results[pl] = {"label": label, "timeseries": tensor}
+
+    return results
+
 
 if __name__ == "__main__":
     import json, time
-    with open("data/dafm_arable_parcels.json") as f:
-        parcels = json.load(f)
 
-    # Test on 3 wheat parcels
-    wheat = [p for p in parcels if p["properties"].get("CROP")=="Wheat - Winter"][:3]
-    for i,p in enumerate(wheat):
-        polygon = p["geometry"]["coordinates"][0]
-        par_lab = p["properties"].get("PAR_LAB","?")
-        t0 = time.time()
-        tensor = get_s2_timeseries(polygon, "2024-10-01", "2025-09-30")
-        elapsed = time.time()-t0
-        if tensor is not None:
-            print(f"Parcel {i} ({par_lab[:8]}): shape={tensor.shape} "
-                  f"range={tensor.min():.3f}-{tensor.max():.3f} ({elapsed:.1f}s)")
-            print(f"  B08 NIR: {[round(v,3) for v in tensor[:,7]]}")
-        else:
-            print(f"Parcel {i}: no data ({elapsed:.1f}s)")
+    CROP_MAP = {
+        "Wheat - Winter":"Wheat","Wheat - Spring":"Wheat",
+        "Barley - Spring":"Barley","Barley - Winter":"Barley",
+        "Oats - Spring":"Oats","Oats - Winter":"Oats",
+        "Oilseed Rape - Winter":"Oilseed Rape",
+        "Maize":"Maize","Beans - Spring":"Beans",
+        "Permanent Pasture":"Grassland",
+    }
+
+    with open("data/dafm_arable_parcels.json") as f:
+        all_parcels = json.load(f)
+
+    # Pilot: 5 wheat parcels
+    pilot = []
+    for p in all_parcels:
+        crop = CROP_MAP.get(p["properties"].get("CROP",""))
+        if crop == "Wheat" and len(pilot) < 5:
+            pilot.append((
+                p["properties"]["PAR_LAB"],
+                crop,
+                p["geometry"]["coordinates"][0]
+            ))
+
+    print(f"Extracting {len(pilot)} pilot parcels...")
+    t0 = time.time()
+    results = extract_batch(pilot, "2024-10-01", "2025-09-30")
+    elapsed = time.time()-t0
+
+    print(f"\nDone in {elapsed:.0f}s ({elapsed/len(results):.0f}s/parcel)")
+    for pl, data in results.items():
+        ts = data["timeseries"]
+        print(f"  {pl[:12]} {data['label']}: shape={ts.shape} "
+              f"B08={[round(v,3) for v in ts[:,7][:8]]}...")
