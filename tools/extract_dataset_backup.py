@@ -17,11 +17,8 @@ CROP_MAP = {
     "Permanent Pasture":"Grassland",
 }
 TARGETS = {
-    "Oilseed Rape":57,
-    "Beans":88,
-    "Oats":94,
-    "Maize":85,
-    "Potatoes":39,
+    "Grassland":500,"Barley":500,"Wheat":200,"Oats":100,
+    "Oilseed Rape":56,"Maize":85,"Beans":83,"Potatoes":39,
 }
 
 with open("data/dafm_arable_parcels.json") as f:
